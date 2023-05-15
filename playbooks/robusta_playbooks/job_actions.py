@@ -20,7 +20,6 @@ from robusta.api import (
     to_kubernetes_name,
 )
 
-
 class JobParams(ActionParams):
     """
     :var image: The job image.
@@ -35,7 +34,6 @@ class JobParams(ActionParams):
     :var active_deadline_seconds: Specifies the duration in seconds relative to the startTime
         that the job may be active before the system tries to terminate it; value must be
         positive integer
-
     :example command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
     """
 
@@ -50,27 +48,40 @@ class JobParams(ActionParams):
     backoff_limit: int = None  # type: ignore
     active_deadline_seconds: int = None  # type: ignore
 
+    ContainerSecurityContext = SecurityContext(
+        allowPrivilegeEscalation = False,
+        capabilities = Container.securityContext.capabilities.drop(["ALL"]),
+        privileged = False,
+        readOnlyRootFilesystem = True,
+        runAsGroup = 1337,
+        runAsNonRoot= True,
+        runAsUser= 1337,
+        seLinuxOptions= "RuntimeDefault",
+    )
+
+    PodSecurityContext = PodTemplateSpec.spec.securityContext(
+        seLinuxOptions= "RuntimeDefault",
+        runAsUser= 1000,
+        fsGroup=1337,
+        runAsNonRoot= True,
+        runAsGroup=1000,
+    )
+
+
 
 @action
-def alert_handling_job(event: PrometheusKubernetesAlert, params: JobParams):
+def alert_handling_job_v2(event: PrometheusKubernetesAlert, params: JobParams):
     """
     Create a kubernetes job with the specified parameters
-
     In addition, the job pod receives the following alert parameters as environment variables
-
     ALERT_NAME
-
     ALERT_STATUS
-
     ALERT_OBJ_KIND - oneof pod/deployment/node/job/daemonset or None in case it's unknown
-
     ALERT_OBJ_NAME
-
     ALERT_OBJ_NAMESPACE (If present)
-
     ALERT_OBJ_NODE (If present)
-
     """
+
     job_name = to_kubernetes_name(params.name)
     job: Job = Job(
         metadata=ObjectMeta(name=job_name, namespace=params.namespace),
@@ -82,9 +93,22 @@ def alert_handling_job(event: PrometheusKubernetesAlert, params: JobParams):
                             name=params.name,
                             image=params.image,
                             command=params.command,
-                            env=__get_alert_env_vars(event),
+                            securityContext= params.ContainerSecurityContext,
+                            resources=Container.ResourceRequirements(
+                                Container.resources.limits.values({
+                                    "cpu": "200m",
+                                    "mem": "100Mi",
+                                    "ephemeral-storage": "1Gi"}
+                                ),
+                                Container.resources.requests.values({
+                                    "cpu": "200m",
+                                    "mem": "100Mi",
+                                    "ephemeral-storage": "1Gi"}
+                                ),
+                            )
                         )
                     ],
+                    SecurityContext=params.PodSecurityContext,
                     serviceAccountName=params.service_account,
                     restartPolicy=params.restart_policy,
                 )
@@ -99,6 +123,86 @@ def alert_handling_job(event: PrometheusKubernetesAlert, params: JobParams):
 
     if params.notify:
         event.add_enrichment([MarkdownBlock(f"Alert handling job *{job_name}* created.")])
+
+
+# class JobParams(ActionParams):
+#     """
+#     :var image: The job image.
+#     :var command: The job command as array of strings
+#     :var name: Custom name for the job and job container.
+#     :var namespace: The created job namespace.
+#     :var service_account: Job pod service account. If omitted, default is used.
+#     :var restart_policy: Job container restart policy
+#     :var job_ttl_after_finished: Delete finished job ttl (seconds). If omitted, jobs will not be deleted automatically.
+#     :var notify: Add a notification for creating the job.
+#     :var backoff_limit: Specifies the number of retries before marking this job failed. Defaults to 6
+#     :var active_deadline_seconds: Specifies the duration in seconds relative to the startTime
+#         that the job may be active before the system tries to terminate it; value must be
+#         positive integer
+
+#     :example command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+#     """
+
+#     image: str
+#     command: List[str]
+#     name: str = "robusta-action-job"
+#     namespace: str = "default"
+#     service_account: str = None  # type: ignore
+#     restart_policy: str = "OnFailure"
+#     job_ttl_after_finished: int = None  # type: ignore
+#     notify: bool = False
+#     backoff_limit: int = None  # type: ignore
+#     active_deadline_seconds: int = None  # type: ignore
+
+
+# @action
+# def alert_handling_job(event: PrometheusKubernetesAlert, params: JobParams):
+#     """
+#     Create a kubernetes job with the specified parameters
+
+#     In addition, the job pod receives the following alert parameters as environment variables
+
+#     ALERT_NAME
+
+#     ALERT_STATUS
+
+#     ALERT_OBJ_KIND - oneof pod/deployment/node/job/daemonset or None in case it's unknown
+
+#     ALERT_OBJ_NAME
+
+#     ALERT_OBJ_NAMESPACE (If present)
+
+#     ALERT_OBJ_NODE (If present)
+
+#     """
+#     job_name = to_kubernetes_name(params.name)
+#     job: Job = Job(
+#         metadata=ObjectMeta(name=job_name, namespace=params.namespace),
+#         spec=JobSpec(
+#             template=PodTemplateSpec(
+#                 spec=PodSpec(
+#                     containers=[
+#                         Container(
+#                             name=params.name,
+#                             image=params.image,
+#                             command=params.command,
+#                             env=__get_alert_env_vars(event),
+#                         )
+#                     ],
+#                     serviceAccountName=params.service_account,
+#                     restartPolicy=params.restart_policy,
+#                 )
+#             ),
+#             backoffLimit=params.backoff_limit,
+#             activeDeadlineSeconds=params.active_deadline_seconds,
+#             ttlSecondsAfterFinished=params.job_ttl_after_finished,
+#         ),
+#     )
+
+#     job.create()
+
+#     if params.notify:
+#         event.add_enrichment([MarkdownBlock(f"Alert handling job *{job_name}* created.")])
 
 
 def __get_alert_env_vars(event: PrometheusKubernetesAlert) -> List[EnvVar]:
